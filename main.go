@@ -3,8 +3,9 @@
 //
 // Linear's own Slack notifications include issue titles, descriptions and
 // comments. For support tickets those contain customer data, so this service
-// receives Linear's issue webhooks instead and posts only the identifier and
-// what happened, e.g. "SUP-123 created" or "SUP-123 → Done".
+// receives Linear's webhooks instead and posts only the identifier and what
+// happened, e.g. "SUP-123 created", "SUP-123 → Done" or "SUP-123 reply
+// received".
 package main
 
 import (
@@ -21,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -85,41 +85,42 @@ type notifier struct {
 	now     func() time.Time
 }
 
-// event holds the fields of a Linear webhook that this service uses. The
-// issue's title, description and other content are deliberately not decoded.
+// event holds the fields of a Linear issue or comment webhook that this
+// service uses. Titles, descriptions, comment bodies and other content are
+// deliberately not decoded.
 type event struct {
-	Action           string `json:"action"`
-	Type             string `json:"type"`
-	URL              string `json:"url"`
-	WebhookTimestamp int64  `json:"webhookTimestamp"`
+	Action           string  `json:"action"`
+	Type             string  `json:"type"`
+	WebhookTimestamp float64 `json:"webhookTimestamp"`
 	Data             struct {
-		Identifier string `json:"identifier"`
-		Number     int    `json:"number"`
-		URL        string `json:"url"`
-		Team       struct {
-			Key string `json:"key"`
-		} `json:"team"`
+		issueRef
 		State struct {
 			Name string `json:"name"`
 		} `json:"state"`
+
+		// Set on comments.
+		Issue          issueRef `json:"issue"`
+		ExternalUserID string   `json:"externalUserId"`
 	} `json:"data"`
 	UpdatedFrom struct {
 		StateID string `json:"stateId"`
 	} `json:"updatedFrom"`
 }
 
-func (e *event) identifier() string {
-	if e.Data.Identifier != "" {
-		return e.Data.Identifier
-	}
-	return e.Data.Team.Key + "-" + strconv.Itoa(e.Data.Number)
+type issueRef struct {
+	Identifier string `json:"identifier"`
+	URL        string `json:"url"`
+	Team       struct {
+		Key string `json:"key"`
+	} `json:"team"`
 }
 
-func (e *event) issueURL() string {
-	if e.Data.URL != "" {
-		return e.Data.URL
+// issue returns the issue that e is about.
+func (e *event) issue() issueRef {
+	if e.Type == "Comment" {
+		return e.Data.Issue
 	}
-	return e.URL
+	return e.Data.issueRef
 }
 
 func (n *notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +139,7 @@ func (n *notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	if n.now().Sub(time.UnixMilli(e.WebhookTimestamp)).Abs() > maxClockSkew {
+	if n.now().Sub(time.UnixMilli(int64(e.WebhookTimestamp))).Abs() > maxClockSkew {
 		http.Error(w, "stale webhook", http.StatusUnauthorized)
 		return
 	}
@@ -147,39 +148,37 @@ func (n *notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	id := e.issue().Identifier
 	if err := n.postToSlack(r.Context(), text); err != nil {
 		// A non-2xx response makes Linear retry the delivery later.
-		log.Printf("%s: posting to Slack failed: %v", e.identifier(), err)
+		log.Printf("%s: posting to Slack failed: %v", id, err)
 		http.Error(w, "slack delivery failed", http.StatusBadGateway)
 		return
 	}
-	log.Printf("%s: posted %s", e.identifier(), e.Action)
+	log.Printf("%s: posted %s %s", id, e.Type, e.Action)
 }
 
 // message returns the Slack text for e, or false if e should not be posted.
 func (n *notifier) message(e *event) (string, bool) {
-	if e.Type != "Issue" {
-		return "", false
-	}
-	if n.teamKey != "" && !strings.EqualFold(e.Data.Team.Key, n.teamKey) {
-		return "", false
-	}
-
-	issue := slackEscape(e.identifier())
-	if u := e.issueURL(); u != "" {
-		issue = "<" + u + "|" + issue + ">"
-	}
-
+	var what string
 	switch {
-	case e.Action == "create":
-		return issue + " created", true
-	case e.Action == "update" && e.UpdatedFrom.StateID != "":
-		if e.Data.State.Name == "" {
-			return issue + " changed status", true
-		}
-		return issue + " → " + slackEscape(e.Data.State.Name), true
+	case e.Type == "Issue" && e.Action == "create":
+		what = "created"
+	case e.Type == "Issue" && e.Action == "update" && e.UpdatedFrom.StateID != "":
+		what = "→ " + slackEscape(e.Data.State.Name)
+	// Comments by external users come from outside Linear, such as a
+	// customer replying by email.
+	case e.Type == "Comment" && e.Action == "create" && e.Data.ExternalUserID != "":
+		what = "reply received"
+	default:
+		return "", false
 	}
-	return "", false
+
+	issue := e.issue()
+	if n.teamKey != "" && !strings.EqualFold(issue.Team.Key, n.teamKey) {
+		return "", false
+	}
+	return "<" + issue.URL + "|" + slackEscape(issue.Identifier) + "> " + what, true
 }
 
 // validSignature reports whether signature is the hex-encoded HMAC-SHA256 of
