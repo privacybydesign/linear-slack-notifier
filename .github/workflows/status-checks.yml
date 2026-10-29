@@ -32,3 +32,18 @@ jobs:
       - uses: actions/checkout@v6
       - name: Build container
         run: docker build -t linear-slack-notifier .
+
+  # The organisation's ruleset requires this one check, so new jobs only need
+  # to be added to its needs.
+  passed:
+    name: Status checks passed
+    if: always()
+    needs: [test-go, build-docker-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required jobs succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

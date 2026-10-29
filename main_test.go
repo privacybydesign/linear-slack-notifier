@@ -71,6 +71,28 @@ func issueEvent(action string) map[string]any {
 	}
 }
 
+// commentEvent returns a Linear webhook for a comment by a customer who
+// replied by email.
+func commentEvent() map[string]any {
+	return map[string]any{
+		"action":           "create",
+		"type":             "Comment",
+		"url":              issueURL + "#comment-1234",
+		"webhookTimestamp": testNow.UnixMilli(),
+		"data": map[string]any{
+			"body":           "Hoi, het werkt weer. Groet, Jan Jansen",
+			"externalUserId": "external-user-id",
+			"externalUser":   map[string]any{"name": "Jan Jansen", "email": "jan@example.com"},
+			"issue": map[string]any{
+				"identifier": "SUP-12",
+				"url":        issueURL,
+				"title":      "Vraag van Jan Jansen",
+				"team":       map[string]any{"key": "SUP"},
+			},
+		},
+	}
+}
+
 func sign(body []byte) string {
 	mac := hmac.New(sha256.New, []byte(testSecret))
 	mac.Write(body)
@@ -93,61 +115,77 @@ func deliver(t *testing.T, n *notifier, ev map[string]any, signature func([]byte
 func TestMessages(t *testing.T) {
 	tests := []struct {
 		name   string
-		action string
+		event  map[string]any
 		modify func(ev map[string]any)
 		want   string // empty if nothing should be posted
 	}{
 		{
-			name:   "created",
-			action: "create",
-			want:   "<" + issueURL + "|SUP-12> created",
+			name:  "issue created",
+			event: issueEvent("create"),
+			want:  "<" + issueURL + "|SUP-12> created",
 		},
 		{
-			name:   "status changed",
-			action: "update",
+			name:  "status changed",
+			event: issueEvent("update"),
 			modify: func(ev map[string]any) {
 				ev["updatedFrom"] = map[string]any{"stateId": "previous-state"}
 			},
 			want: "<" + issueURL + "|SUP-12> → Done",
 		},
 		{
-			name:   "other field changed",
-			action: "update",
+			name:  "other field changed",
+			event: issueEvent("update"),
 			modify: func(ev map[string]any) {
 				ev["updatedFrom"] = map[string]any{"title": "Vraag"}
 			},
 		},
 		{
-			name:   "removed",
-			action: "remove",
+			name:  "issue removed",
+			event: issueEvent("remove"),
 		},
 		{
-			name:   "comment",
-			action: "create",
-			modify: func(ev map[string]any) { ev["type"] = "Comment" },
-		},
-		{
-			name:   "other team",
-			action: "create",
+			name:  "issue in other team",
+			event: issueEvent("create"),
 			modify: func(ev map[string]any) {
 				ev["data"].(map[string]any)["team"] = map[string]any{"key": "YIV"}
 			},
 		},
 		{
-			name:   "identifier and url missing from data",
-			action: "create",
+			name:  "customer reply",
+			event: commentEvent(),
+			want:  "<" + issueURL + "|SUP-12> reply received",
+		},
+		{
+			name:  "comment by team member",
+			event: commentEvent(),
 			modify: func(ev map[string]any) {
-				delete(ev["data"].(map[string]any), "identifier")
-				delete(ev["data"].(map[string]any), "url")
+				data := ev["data"].(map[string]any)
+				delete(data, "externalUserId")
+				delete(data, "externalUser")
+				data["userId"] = "linear-user-id"
 			},
-			want: "<" + issueURL + "|SUP-12> created",
+		},
+		{
+			name:  "customer reply edited",
+			event: commentEvent(),
+			modify: func(ev map[string]any) {
+				ev["action"] = "update"
+			},
+		},
+		{
+			name:  "customer reply in other team",
+			event: commentEvent(),
+			modify: func(ev map[string]any) {
+				issue := ev["data"].(map[string]any)["issue"].(map[string]any)
+				issue["team"] = map[string]any{"key": "YIV"}
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			slack := newSlackStub(t, http.StatusOK)
-			ev := issueEvent(tt.action)
+			ev := tt.event
 			if tt.modify != nil {
 				tt.modify(ev)
 			}

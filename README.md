@@ -5,11 +5,15 @@ Posts Linear issue events to Slack without their content.
 
 Linear's built-in Slack notifications include issue titles, descriptions and
 comments. For support tickets those contain customer data. This service
-receives Linear's issue webhooks instead and posts only the identifier and
-what happened:
+receives Linear's webhooks instead and posts only the identifier and what
+happened:
 
     SUP-123 created
     SUP-123 → Done
+    SUP-123 reply received
+
+A reply is a comment from outside Linear, such as a customer answering by
+email.
 
 The identifier links to the issue, with Slack link previews disabled.
 
@@ -31,16 +35,17 @@ Setup
 1. In Slack, add an incoming webhook for the channel to post to (a Slack app
    with *Incoming Webhooks* enabled) and use its URL as `SLACK_WEBHOOK_URL`.
 2. In Linear, go to *Settings → Administration → API* and create a webhook
-   with URL `https://<host>/webhook`, the Support team, and only *Issues* as
-   data change event. Use its signing secret as `LINEAR_WEBHOOK_SECRET`.
+   with URL `https://<host>/webhook`, the Support team, and only *Issues* and
+   *Comments* as data change events. Use its signing secret as `LINEAR_WEBHOOK_SECRET`.
 3. Turn off the team's own Slack notifications in Linear (*Team settings →
    Slack notifications*), otherwise the full content is still posted.
 
 Privacy
 -------
 
-* Only the identifier, team, status and URL are decoded from the webhook; the
-  title, description and other content are ignored and never logged.
+* Only the identifier, team, status and URL of the issue, and whether a comment
+  comes from outside Linear, are decoded from the webhook. Titles,
+  descriptions, comment bodies and other content are ignored and never logged.
 * Links to issues in a **public** Linear team can still be expanded by Linear's
   own Slack app, and Linear replies to issue IDs mentioned in Slack with a
   link. Making the team private prevents both; otherwise disable unfurls and
