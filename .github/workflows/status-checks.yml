@@ -1,0 +1,34 @@
+# Workflow to check whether changes to main fulfill all requirements.
+name: Status checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  # Make it possible to trigger the checks manually.
+  workflow_dispatch:
+
+jobs:
+  test-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Check fmt
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  build-docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build container
+        run: docker build -t linear-slack-notifier .
